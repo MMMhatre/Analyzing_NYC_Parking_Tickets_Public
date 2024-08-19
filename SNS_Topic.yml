@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Create the SNS Topic to send group notifications
+
+Parameters:
+  userID:
+    Type: String
+    Description: The User ID of the AWS Account
+    Default: 156913735372  # Enter your AWS Account ID
+  SNSTopicName:
+    Type: String
+    Description: The TopicName for the SNS Topic
+    Default: Group-5-big-data-project-SNS-Topic
+
+Resources:
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: "Group 5 SNS Topic"
+      FifoTopic: "false"
+      Subscription:
+        - Endpoint: "yashrasam@gmail.com"
+          Protocol: "email"
+      TopicName: !Ref SNSTopicName
+
+Outputs:
+  SNSTopicARN:
+    Description: The ARN for the SNS topic created
+    Value: !Sub "arn:aws:sns:us-east-1:${userID}:${SNSTopicName}"
+    Export:
+      Name: !Ref SNSTopicName

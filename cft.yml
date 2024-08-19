@@ -1,0 +1,424 @@
+AWSTemplateFormatVersion : "2010-09-09"
+Description: "Cloud Formation Template for our big data project on Analyzing NYC Parking Tickets"
+
+Parameters:
+  cftName:
+    Type: String
+    Description: Name of the CFT Stack
+    Default: cft-stack
+  datalakename: 
+    Type: String
+    Description: Data Lake S3 Bucket Name
+    Default: big-data-group-5  # Enter your project name, Must be in accordance with AWS Bucket Naming Conventions
+  userID: 
+    Type: String
+    Description: User ID
+    Default: "UID"  # Enter your AWS Account ID
+  labRole: 
+    Type: String
+    Description: Enter the LabRole ARN
+    Default: "LabRole ARN"  # Enter the LabRole ARN associated with your account
+  s3bucket:  
+    Type: String
+    Description: The location of the S3 bucket which contains the scripts, spark-UI-logs and temp-dir folder
+    Default: "data-lake-bucket"  # Enter your bucket name which contains a /scripts/ folder
+  rdsEndpoint:
+    Type: String
+    Description: The Endpoint of the MySQL RDS server
+    Default: "RDS JDBC Endpoint" # Raw Data Source 1
+  rdsUsername:
+    Type: String
+    Description: The Username of the MySQL RDS server
+    Default: "administrator"
+  rdsPassword:
+    Type: String
+    Description: The password of the MySQL RDS server
+    Default: "password"
+  s3data:
+    Type: String
+    Description: The location of data file stored on S3
+    Default: "Open_Parking_and_Camera_Violations.csv" # Raw Data Source 2
+  redshiftDBName:
+    Type: String
+    Description: The Database name for redshift db
+    Default: dev
+  redshiftMasterUsername:
+    Type: String
+    Description: Redshift Username
+    Default: administrator
+  redshiftClusterIdentifier:
+    Type: String
+    Description: Redshift Cluster name
+    Default: redshiftcluster
+  SNSTopicName:
+    Type: String
+    Description: The TopicName for the SNS Topic
+    Default: SNS-Topic
+  glueNumberOfWorkers:
+    Type: String
+    Description: The Number of workers to be used for the glue jobs
+    Default: 5
+  glueTimeout:
+    Type: String
+    Description: The timeout for the glue jobs.
+    Default: 60
+  glueWorkerType:
+    Type: String
+    Description: The workers to be used for glue jobs.
+    Default: G.1X
+  glueImportRDSScript:
+    Type: String
+    Description: The python script to be used for GlueJobImportRDS
+    Default: "s3://s3bucket/scripts/RDS_ingestion.py"
+  glueImportS3Script:
+    Type: String
+    Description: The python script to be used for GlueJobExportS3
+    Default: "s3://s3bucket/scripts/S3_ingestion.py"
+  glueExportRedshiftScript:
+    Type: String
+    Description: The python script to be used for GlueJobExport
+    Default: "s3://s3bucket/scripts/S3_ingestion.py"
+
+Resources:
+  s3datalake:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Ref datalakename
+      VersioningConfiguration:
+        Status: Suspended
+
+  GlueJobImportRDS:
+    Type: AWS::Glue::Job
+    DependsOn: s3datalake
+    Properties:
+      Name: datapipeline-ingest-RDS
+      Description: Ingests data from RDS and writes it as a parquet file to the data lake
+      GlueVersion: 4.0
+      MaxRetries: 0
+      NumberOfWorkers: !Ref glueNumberOfWorkers
+      Role: !Ref labRole
+      Timeout: !Ref glueTimeout
+      WorkerType: !Ref glueWorkerType
+      Command:
+        Name: glueetl
+        ScriptLocation: !Ref glueImportRDSScript
+      DefaultArguments:
+        '--RDS_endpoint': !Ref rdsEndpoint
+        '--RDS_secret_arn': !Ref SecretRDS
+        '--data_lake': !Ref datalakename
+        '--enable-metrics': true
+        '--enable-spark-ui': true
+        '--enable-job-insights': false
+        '--enable-continuous-cloudwatch-log': true
+        '--job-bookmark-option': job-bookmark-disable
+        '--job-language': python
+
+  GlueJobImportS3:
+    Type: AWS::Glue::Job
+    DependsOn: s3datalake
+    Properties:
+      Name: datapipeline-ingest-S3
+      Description: Ingests data from S3 and writes it as a parquet file to the data lake
+      GlueVersion: 4.0
+      MaxRetries: 0
+      NumberOfWorkers: !Ref glueNumberOfWorkers
+      Role: !Ref labRole
+      Timeout: !Ref glueTimeout
+      WorkerType: !Ref glueWorkerType
+      Command:
+        Name: glueetl
+        ScriptLocation: !Ref glueImportS3Script
+      DefaultArguments:
+        '--S3_Import': !Ref s3data
+        '--data_lake': !Ref datalakename  # Referencing the created S3 bucket
+        '--enable-auto-scaling': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--enable-metrics': 'true'
+        '--enable-spark-ui': 'true'
+        '--spark-event-logs-path': !Sub "s3://${s3bucket}/spark-UI-logs/"
+        '--TempDir': !Sub "s3://${s3bucket}/temp-dir/"
+
+  GlueJobExport:
+    Type: AWS::Glue::Job
+    DependsOn:
+      - RedshiftCluster
+      - s3datalake
+    Properties:
+      Name: datapipeline-transform-export-redshift
+      Description: Ingests data from datalake exports it to redshift
+      GlueVersion: 4.0
+      MaxRetries: 0
+      NumberOfWorkers: !Ref glueNumberOfWorkers
+      Role: !Ref labRole
+      Timeout: !Ref glueTimeout
+      WorkerType: !Ref glueWorkerType
+      Command:
+        Name: glueetl
+        ScriptLocation: !Ref glueExportRedshiftScript
+      DefaultArguments:
+        '--data_lake': !Ref datalakename
+        '--redshift_endpoint': !GetAtt RedshiftCluster.Endpoint.Address
+        '--redshift_database': !Ref redshiftDBName
+        '--redshift_secret_arn': !Ref SecretRedshift
+        '--enable-auto-scaling': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--enable-spark-ui': 'true'
+        '--spark-event-logs-path': !Sub "s3://${s3bucket}/spark-UI-logs/"
+        '--TempDir': !Sub "s3://${s3bucket}/temp-dir/"
+  
+  GlueWorkflow:
+    Type: AWS::Glue::Workflow
+    Properties:
+      Description: Run ETL Jobs
+      MaxConcurrentRuns: 1
+      Name: datapipeline-glueworkflow
+
+  GlueTriggerImport:
+    Type: AWS::Glue::Trigger
+    DependsOn:
+      - GlueWorkflow
+      - GlueJobImportRDS
+      - GlueJobImportS3
+    Properties: 
+      Actions:    
+        - JobName: !Ref GlueJobImportRDS
+        - JobName: !Ref GlueJobImportS3
+      Description: Triggers the Import Jobs
+      Name: gluetriggerimport
+      Type: ON_DEMAND
+      WorkflowName: datapipeline-glueworkflow
+  
+  GlueTriggerExport:
+    Type: AWS::Glue::Trigger
+    DependsOn:
+      - GlueWorkflow
+      - GlueJobExport
+    Properties: 
+      Actions: 
+        - JobName: !Ref GlueJobExport
+      Description: Triggers the Export Jobs
+      Name: gluetriggerexport
+      Predicate:
+        Conditions:
+          - JobName: !Ref GlueJobImportRDS
+            LogicalOperator: EQUALS
+            State: SUCCEEDED
+          - JobName: !Ref GlueJobImportS3
+            LogicalOperator: EQUALS
+            State: SUCCEEDED
+        Logical: AND
+      StartOnCreation: true
+      Type: CONDITIONAL
+      WorkflowName: datapipeline-glueworkflow
+
+  EventBridgeTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Triggers on AWS CloudFormation create complete event
+      EventPattern:
+        Fn::Sub:
+          - |
+            {
+              "source": ["aws.cloudformation"],
+              "detail-type": ["CloudFormation Stack Status Change"],
+              "detail": {
+                "stack-id": [{
+                  "prefix": "arn:aws:cloudformation:us-east-1:${UID}:stack/${CFT}/"
+                }],
+                "status-details": {
+                  "status": ["CREATE_COMPLETE"]
+                }
+              }
+            }
+          - UID: !Ref userID
+            CFT: !Ref cftName
+      Name: Start-Workflow
+      RoleArn: !Ref labRole
+      State: ENABLED
+      Targets:
+        - Arn: !Ref StateMachine
+          Id: StateMachineTarget
+          RoleArn: !Ref labRole
+
+  StateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - GlueTriggerImport
+      - GlueTriggerExport
+      - RedshiftCluster
+      - SecretRedshift
+    Properties:
+      DefinitionString:
+        Fn::Sub:
+          - |
+            {
+              "Comment": "State machine to trigger Glue workflow and automate creation of views on redshift cluster",
+              "StartAt": "StartWorkflowRun",
+              "States": {
+                "StartWorkflowRun": {
+                  "Type": "Task",
+                  "Parameters": {
+                    "Name": "datapipeline-glueworkflow"
+                  },
+                  "Resource": "arn:aws:states:::aws-sdk:glue:startWorkflowRun",
+                  "Next": "GetWorkflow"
+                },
+                "GetWorkflow": {
+                  "Type": "Task",
+                  "Parameters": {
+                    "Name": "datapipeline-glueworkflow"
+                  },
+                  "Resource": "arn:aws:states:::aws-sdk:glue:getWorkflow",
+                  "Next": "Choice"
+                },
+                "Choice": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.Workflow.LastRun.Status",
+                      "StringEquals": "RUNNING",
+                      "Next": "Wait check status"
+                    },
+                    {
+                      "Variable": "$.Workflow.LastRun.Status",
+                      "StringEquals": "COMPLETED",
+                      "Next": "BatchExecuteStatement"
+                    }
+                  ],
+                  "Default": "SNS Publish Default"
+                },
+                "Wait check status": {
+                  "Type": "Wait",
+                  "Seconds": 20,
+                  "Next": "GetWorkflow"
+                },
+                "BatchExecuteStatement": {
+                  "Type": "Task",
+                  "Parameters": {
+                    "ClusterIdentifier": "${CI}",
+                    "Database": "${DB}",
+                    "SecretArn": "${Secret_ARN}",
+                    "Sqls": [
+                      "create materialized view time_data as select violation_county, issue_date, EXTRACT(hour from violation_time) as Violation_hour, count(summons_number) as total_violations from nyc_cft group by violation_county, issue_date, Violation_hour;",
+                      "create materialized view summon as select issuing_agency, violation_description, vehicle_make, violation_county, violation_status, count(summons_number) as Total_Violations from nyc_cft group by issuing_agency, violation_description, vehicle_make, violation_county, violation_status;",
+                      "create materialized view amount as select registration_state, violation_county, issue_date, sum(fine_amount) as fine, sum(penalty_amount) as penalty, sum(reduction_amount) as reduction, sum(amount_due) as due from nyc_cft group by registration_state, violation_county, issue_date;"
+                    ],
+                    "StatementName": "create views"
+                  },
+                  "Resource": "arn:aws:states:::aws-sdk:redshiftdata:batchExecuteStatement",
+                  "Next": "SNS Publish Success"
+                },
+                "SNS Publish Success": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sns:publish",
+                  "Parameters": {
+                    "TopicArn": "${SNS_Topic_ARN}",
+                    "Message": "Hello,\n\nThe endpoint, username and database name for the redshift cluster that was created using CFT are:\n\nEndpoint: ${EP}\nUsername: ${UN}\nDatabase: ${DB}\n\nRegards,\nG5"
+                  },
+                  "End": true
+                },
+                "SNS Publish Default": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sns:publish",
+                  "Parameters": {
+                    "TopicArn": "${SNS_Topic_ARN}",
+                    "Message": "Hello,\n\nThe state machine job may have failed.\n\nRegards,\nG5"
+                  },
+                  "End": true
+                }
+              },
+              "TimeoutSeconds": 5000
+            }
+          - SNS_Topic_ARN: !Sub "arn:aws:sns:us-east-1:${userID}:${SNSTopicName}"
+            EP: !GetAtt RedshiftCluster.Endpoint.Address
+            UN:
+              Fn::Sub: "{{resolve:secretsmanager:${SecretRedshift}::username}}"
+            DB: !Ref redshiftDBName
+            CI: !Ref redshiftClusterIdentifier
+            Secret_ARN: !Ref SecretRedshift
+      RoleArn: !Ref labRole
+      StateMachineName: DataPipeline
+      StateMachineType: STANDARD
+
+  SecretRDS:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Username and password for RDS
+      Name: g5/rds/credentials
+      SecretString: !Sub '{"username":"${rdsUsername}","password":"${rdsPassword}"}'
+
+  RedshiftCluster:
+    Type: 'AWS::Redshift::Cluster'
+    Properties:
+      ClusterType: single-node
+      NumberOfNodes: 1
+      MasterUsername:
+        Fn::Sub: "{{resolve:secretsmanager:${SecretRedshift}::username}}"
+      MasterUserPassword:
+        Fn::Sub: "{{resolve:secretsmanager:${SecretRedshift}::password}}"
+      NodeType: dc2.large
+      PubliclyAccessible: true
+      ClusterIdentifier: !Ref redshiftClusterIdentifier
+      DBName: !Ref redshiftDBName
+
+  SecretRedshift:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Username and password for Redshift Cluster
+      Name: g5/redshift/credentials
+      GenerateSecretString:
+        ExcludeCharacters: "\"'@/\\"
+        ExcludeLowercase: false
+        ExcludeNumbers: false
+        ExcludePunctuation: true
+        ExcludeUppercase: false
+        GenerateStringKey: password
+        IncludeSpace: false
+        PasswordLength: 20
+        RequireEachIncludedType: true
+        SecretStringTemplate: !Sub '{"username": "${redshiftMasterUsername}"}'
+
+  SecretAttachtoRedshift:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref SecretRedshift
+      TargetId: !Ref RedshiftCluster
+      TargetType: AWS::Redshift::Cluster
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: "Group 5 SNS Topic"
+      FifoTopic: "false"
+      Subscription:
+        - Endpoint: "group5dbdamarch23@gmail.com"
+          Protocol: "email"
+      TopicName: !Ref SNSTopicName
+
+Outputs:
+  s3datalakename:
+    Description:  S3 Bucket Arn
+    Value: !GetAtt s3datalake.Arn
+    Export:
+      Name: !Ref datalakename
+  GlueJobImportNameRDS:
+    Description: Name of the created Glue job
+    Value: !Ref GlueJobImportRDS
+  GlueJobImportNameS3:
+    Description: Name of the created Glue job
+    Value: !Ref GlueJobImportS3
+  GlueJobExportName:
+    Description: Name of the created Glue job
+    Value: !Ref GlueJobExport
+  RedshiftClusterJDBCEndpoint:
+    Description: Redshift Cluster JDBC Endpoint
+    Value: !GetAtt RedshiftCluster.Endpoint.Address
+    Export:
+      Name: !Ref redshiftClusterIdentifier
+  SNSTopicARN:
+    Description: The ARN for the SNS topic created
+    Value: !Sub "arn:aws:sns:us-east-1:${userID}:${SNSTopicName}"
+    Export:
+      Name: !Ref SNSTopicName

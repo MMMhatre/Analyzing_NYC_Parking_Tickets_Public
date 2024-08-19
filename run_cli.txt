@@ -1,0 +1,6 @@
+aws cloudformation create-stack --stack-name group-5-cft --template-body file://cft.yml --parameters ParameterKey=project,ParameterValue=big-data-group-5-project ParameterKey=glueNumberOfWorkers,ParameterValue=5 ParameterKey=glueTimeout,ParameterValue=30 ParameterKey=glueWorkerType,ParameterValue=G.1X
+
+# prop = {
+#     "user": "admin",
+#     "password": "aidgjidajsglknq3oi2n4"
+# }

@@ -1,0 +1,73 @@
+name: cft_formation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  RDS_PASSWORD: ${{ secrets.AWS_RDS_PASSWORD }}
+
+  datalakename: ${{ vars.DATA_LAKE_NAME }}
+  userID: ${{ vars.USER_ID }}
+  S3_Scripts_Bucket: ${{ vars.S3_BUCKET_FOR_SCRIPTS }}
+  CFT_Name: ${{ vars.CFT_Name }}
+
+jobs:
+  DeployCFT:
+    runs-on: ubuntu-latest
+    env:
+      rdsEndpoint: "jdbc:mysql://database-1.cdaij527khgx.us-east-1.rds.amazonaws.com:3306/db"
+      rdsUsername: "admin"
+      s3data: "s3://project0786/Open_Parking_and_Camera_Violations.csv"
+      redshiftDBName: "db"
+      redshiftMasterUsername: "admin"
+      redshiftClusterIdentifier: "myredshiftcluster"
+      SNSTopicName: "Group-5-SNS-Topic"
+      glueNumberOfWorkers: "4"
+      glueTimeout: "60"
+      glueWorkerType: "G.1X"
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@master
+
+      - name: aws s3 sync
+        run: |
+          aws s3 sync . s3://${S3_Scripts_Bucket}/scripts/ --exclude '.git/*'
+
+      - name: Validate template
+        run: |
+          aws cloudformation validate-template --template-body file://cft.yml
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${CFT_Name} \
+            --template-file cft.yml \
+            --capabilities CAPABILITY_IAM \
+            --parameter-overrides \
+              cftName=${CFT_Name} \
+              datalakename=${datalakename} \
+              userID=${userID} \
+              labRole="arn:aws:iam::${userID}:role/LabRole" \
+              s3bucket=${S3_Scripts_Bucket} \
+              rdsEndpoint=${rdsEndpoint} \
+              rdsUsername=${rdsUsername} \
+              rdsPassword=${RDS_PASSWORD} \
+              s3data=${s3data} \
+              redshiftDBName=${redshiftDBName} \
+              redshiftMasterUsername=${redshiftMasterUsername} \
+              redshiftClusterIdentifier=${redshiftClusterIdentifier} \
+              SNSTopicName=${SNSTopicName} \
+              glueNumberOfWorkers=${glueNumberOfWorkers} \
+              glueTimeout=${glueTimeout} \
+              glueWorkerType=${glueWorkerType} \
+              glueImportRDSScript="s3://${S3_Scripts_Bucket}/scripts/RDS_ingestion.py" \
+              glueImportS3Script="s3://${S3_Scripts_Bucket}/scripts/S3_ingestion.py" \
+              glueExportRedshiftScript="s3://${S3_Scripts_Bucket}/scripts/Transform.py"
